@@ -1,0 +1,29 @@
+# Developer-authored, trusted config: select columns, joins, ordering, and
+# limit for the "clients_by_balance_city" insight. Never touched by user
+# input or LLM output -- only the WHERE clause (built in sql_builder.py) is
+# influenced by the user's request.
+
+insight_type: clients_by_balance_city
+target_type: clients
+
+select_columns:
+  - column: client_id
+    alias: id
+  - column: client_name
+    alias: name
+  - column: account_balance
+    alias: balance
+  - column: city
+    alias: city
+
+joins: []
+
+order_by:
+  - column: account_balance
+    direction: DESC
+
+limit: 200
+
+narrative_hints:
+  tone: "concise, business-analyst style"
+  emphasize: ["balance distribution", "geographic concentration"]

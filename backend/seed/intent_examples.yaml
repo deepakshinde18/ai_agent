@@ -1,0 +1,17 @@
+# Paraphrased example phrases per insight_type, embedded into the Chroma
+# `intent_examples` collection. Aim for 5-15 varied phrasings per intent so
+# intent detection generalizes beyond exact wording.
+
+intents:
+  - insight_type: clients_by_balance_city
+    examples:
+      - "clients with account balance greater than 1 million"
+      - "show me clients from a specific city with a high account balance"
+      - "list clients whose balance is above a threshold and who live in a given city"
+      - "find high net worth clients by city"
+      - "which clients have an account balance over a certain amount in a city"
+      - "clients filtered by balance and city"
+      - "top clients by balance in a given city"
+      - "give me clients with balance greater than 1 million from city xyz"
+      - "clients from a city with balance above some value"
+      - "who are the clients in this city with the highest account balances"

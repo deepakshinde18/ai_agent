@@ -1,0 +1,32 @@
+# Target-DB column metadata, embedded into the Chroma `column_metadata`
+# collection. Used by the fill_slots graph node to RAG-resolve a free-text
+# column hint (e.g. "account balance") to the exact real column name.
+
+columns:
+  - table: clients
+    column_name: account_balance
+    data_type: numeric
+    target_type: clients
+    description: "Total balance held in the client's primary account."
+    synonyms: ["balance", "acct bal", "account balance", "funds", "account value"]
+
+  - table: clients
+    column_name: city
+    data_type: string
+    target_type: clients
+    description: "City where the client resides."
+    synonyms: ["city", "location", "town"]
+
+  - table: clients
+    column_name: client_id
+    data_type: string
+    target_type: clients
+    description: "Unique identifier for the client."
+    synonyms: ["client id", "customer id"]
+
+  - table: clients
+    column_name: client_name
+    data_type: string
+    target_type: clients
+    description: "Full name of the client."
+    synonyms: ["name", "client name", "customer name"]
