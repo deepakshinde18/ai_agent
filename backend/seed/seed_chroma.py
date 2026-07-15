@@ -6,21 +6,16 @@ Usage:
     uv run python -m seed.seed_chroma
 """
 
-import hashlib
 from pathlib import Path
 
 import yaml
 
 from app.logging_conf import configure_logging, get_logger
-from app.rag.chroma_client import get_column_collection, get_intent_collection
+from app.rag.chroma_client import get_column_collection, get_intent_collection, stable_id
 from app.rag.embeddings import embed_documents
 
 SEED_DIR = Path(__file__).parent
 logger = get_logger(__name__)
-
-
-def _stable_id(*parts: str) -> str:
-    return hashlib.sha256("::".join(parts).encode("utf-8")).hexdigest()[:24]
 
 
 def seed_intents() -> None:
@@ -32,7 +27,7 @@ def seed_intents() -> None:
     for intent in data["intents"]:
         insight_type = intent["insight_type"]
         for example in intent["examples"]:
-            ids.append(_stable_id(insight_type, example))
+            ids.append(stable_id(insight_type, example))
             documents.append(example)
             metadatas.append({"insight_type": insight_type})
 
@@ -52,7 +47,7 @@ def seed_columns() -> None:
     for col in data["columns"]:
         synonyms = ", ".join(col.get("synonyms", []))
         document = f"{col['column_name']}: {col['description']}. synonyms: {synonyms}"
-        ids.append(_stable_id(col["table"], col["column_name"]))
+        ids.append(stable_id(col["table"], col["column_name"]))
         documents.append(document)
         metadatas.append(
             {

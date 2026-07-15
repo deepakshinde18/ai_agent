@@ -1,40 +1,56 @@
-from app.config import get_settings
 from app.db.target_session import target_engine
 from app.graph.sql_builder import (
     SlotResolutionError,
     assemble_select_sql,
     build_bound_statement,
-    extract_filters,
     load_insight_config,
     render_where_clause,
-    resolve_filters,
+    resolve_slot_values,
 )
 from app.graph.state import ErrorInfo, InsightAgentState
+from app.logging_conf import get_logger
+
+logger = get_logger(__name__)
+
+# Target Postgres isn't provisioned yet -- stand in with one dummy row shaped
+# like the `clients` example table so downstream nodes (narrative, SSE) have
+# something to work with. Swap back to the commented-out execution below once
+# the target DB is available.
+_DUMMY_ROWS = [
+    {
+        "client_id": 1,
+        "client_name": "Ava Thompson",
+        "account_balance": 1_250_000,
+        "city": "Springfield",
+    }
+]
 
 
 async def fill_slots_node(state: InsightAgentState) -> dict:
-    settings = get_settings()
     try:
-        extracted = extract_filters(state["raw_input"])
-        resolved = resolve_filters(
-            extracted,
-            state["target_type"],
-            state["slot_definitions"],
-            settings.column_match_confidence_threshold,
+        resolved = resolve_slot_values(
+            state["raw_input"], state["target_type"], state["slot_definitions"]
         )
         where_clause, sql_params, expanding_params = render_where_clause(
-            state["where_clause_template"], resolved
+            state["where_clause_template"], resolved, state["slot_definitions"]
         )
         yaml_config = load_insight_config(state["config_yaml_path"])
         sql = assemble_select_sql(state["from_table_name"], where_clause, yaml_config)
-        stmt = build_bound_statement(sql, sql_params, expanding_params)
 
-        async with target_engine.connect() as conn:
-            result = await conn.execute(stmt, sql_params)
-            rows = [dict(row._mapping) for row in result]
+        logger.info(
+            "fill_slots_built_sql",
+            session_id=state.get("session_id"),
+            sql=sql,
+            sql_params=sql_params,
+        )
+
+        # stmt = build_bound_statement(sql, sql_params, expanding_params)
+        # async with target_engine.connect() as conn:
+        #     result = await conn.execute(stmt, sql_params)
+        #     rows = [dict(row._mapping) for row in result]
+        rows = _DUMMY_ROWS
 
         return {
-            "extracted_filters": extracted,
             "resolved_filters": resolved,
             "rendered_where_clause": where_clause,
             "final_sql": sql,

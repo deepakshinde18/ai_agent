@@ -20,12 +20,6 @@ class ErrorInfo(TypedDict):
     internal_detail: str
 
 
-class FilterCondition(TypedDict):
-    column_hint: str
-    operator: Operator
-    value: Any
-
-
 class ResolvedFilter(TypedDict):
     column_name: str
     operator: Operator
@@ -57,7 +51,6 @@ class InsightAgentState(TypedDict, total=False):
     config_yaml_path: str | None
 
     # slot filling
-    extracted_filters: list[FilterCondition]
     resolved_filters: list[ResolvedFilter]
     rendered_where_clause: str | None
     final_sql: str | None

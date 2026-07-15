@@ -1,0 +1,12 @@
+currently `INSIGHT_DEFINITIONS` has slot definitions. use that in prompt to build sql where clause. 
+for every insight type there will be fixed where clause. only i want to change its predefined values as per the user input
+eg if where clause is "acct_balance >= 10000 and location='ny'" and if user input is give me client whose account balance is greater than
+1000000 then where clause becomes "acct_balance >= 1000000 and location='ny'". 
+where clause i think we can build using llm. we can use column metadata for exact column names
+use the column metadata from rag. it would be used to get exact column name as per user description
+
+
+still its not working as expected.
+what you have to do is get where clause for definition. from the user input you can get exact column name using column metadata 
+with rag. from llm get where clause providing where clause. actual columns and input. it should return where clause
+so there should not be problem like 1 million is not numeric. llm will take care of that

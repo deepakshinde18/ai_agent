@@ -11,7 +11,6 @@ from sqlalchemy import select
 
 from app.db.models import InsightDefinition
 from app.db.session import AgentSessionLocal
-from app.graph.sql_builder import generate_generic_where_template
 from app.logging_conf import configure_logging, get_logger
 
 logger = get_logger(__name__)
@@ -22,6 +21,11 @@ INSIGHT_DEFINITIONS = [
         "target_type": "clients",
         "from_table_name": "clients",
         "config_yaml_path": "clients_by_balance_city.yaml",
+        # Fixed where-clause shape for this insight type -- AND/OR, columns,
+        # and operators are authored here and never change per request. Only
+        # each :slot_name's bound value changes, based on the user's input
+        # (or the slot's `default` below when the user didn't mention it).
+        "where_clause_template": "account_balance >= :acct_bal AND city = :city",
         "slot_definitions": {
             "slots": [
                 {
@@ -30,6 +34,7 @@ INSIGHT_DEFINITIONS = [
                     "expected_type": "numeric",
                     "allowed_operators": ["gt", "gte", "lt", "lte", "eq"],
                     "required": False,
+                    "default": {"operator": "gte", "value": 10000},
                 },
                 {
                     "slot_name": "city",
@@ -37,6 +42,7 @@ INSIGHT_DEFINITIONS = [
                     "expected_type": "string",
                     "allowed_operators": ["eq", "like"],
                     "required": False,
+                    "default": {"operator": "eq", "value": "ny"},
                 },
             ]
         },
@@ -47,9 +53,6 @@ INSIGHT_DEFINITIONS = [
 async def seed() -> None:
     async with AgentSessionLocal() as session:
         for definition in INSIGHT_DEFINITIONS:
-            slot_names = [s["slot_name"] for s in definition["slot_definitions"]["slots"]]
-            where_template = generate_generic_where_template(slot_names)
-
             existing = await session.scalar(
                 select(InsightDefinition).where(
                     InsightDefinition.insight_type == definition["insight_type"]
@@ -60,7 +63,7 @@ async def seed() -> None:
                 existing.from_table_name = definition["from_table_name"]
                 existing.config_yaml_path = definition["config_yaml_path"]
                 existing.slot_definitions = definition["slot_definitions"]
-                existing.where_clause_template = where_template
+                existing.where_clause_template = definition["where_clause_template"]
             else:
                 session.add(
                     InsightDefinition(
@@ -69,7 +72,7 @@ async def seed() -> None:
                         from_table_name=definition["from_table_name"],
                         config_yaml_path=definition["config_yaml_path"],
                         slot_definitions=definition["slot_definitions"],
-                        where_clause_template=where_template,
+                        where_clause_template=definition["where_clause_template"],
                     )
                 )
             logger.info("seeded_insight_definition", insight_type=definition["insight_type"])

@@ -4,11 +4,9 @@ from app.graph import sql_builder
 from app.graph.sql_builder import (
     SlotResolutionError,
     assemble_select_sql,
-    generate_generic_where_template,
     render_where_clause,
-    resolve_filters,
+    resolve_slot_values,
 )
-from app.rag.column_matcher import ColumnMatch
 
 SLOT_DEFINITIONS = {
     "slots": [
@@ -29,32 +27,73 @@ SLOT_DEFINITIONS = {
     ]
 }
 
+SLOT_DEFINITIONS_WITH_DEFAULTS = {
+    "slots": [
+        {
+            "slot_name": "acct_bal",
+            "column_name": "account_balance",
+            "expected_type": "numeric",
+            "allowed_operators": ["gt", "gte", "lt", "lte", "eq"],
+            "required": False,
+            "default": {"operator": "gte", "value": 10000},
+        },
+        {
+            "slot_name": "city",
+            "column_name": "city",
+            "expected_type": "string",
+            "allowed_operators": ["eq", "like"],
+            "required": False,
+            "default": {"operator": "eq", "value": "ny"},
+        },
+    ]
+}
 
-def test_generate_generic_where_template_renders_all_present_filters():
-    template = generate_generic_where_template(["acct_bal", "city"])
+FIXED_TEMPLATE = "account_balance >= :acct_bal AND city = :city"
+
+
+def test_render_where_clause_returns_template_unchanged():
+    # Structure (columns, operators, AND/OR) is authored config -- render
+    # must never rewrite it, only supply bound-parameter values.
     resolved = [
         {"column_name": "account_balance", "operator": "gt", "value": 1_000_000, "param_name": "acct_bal"},
-        {"column_name": "city", "operator": "eq", "value": "xyz", "param_name": "city"},
+        {"column_name": "city", "operator": "eq", "value": "sf", "param_name": "city"},
     ]
-    where, params, expanding = render_where_clause(template, resolved)
-    assert where == "account_balance > :acct_bal AND city = :city"
-    assert params == {"acct_bal": 1_000_000, "city": "xyz"}
+    where, params, expanding = render_where_clause(FIXED_TEMPLATE, resolved, SLOT_DEFINITIONS_WITH_DEFAULTS)
+    assert where == FIXED_TEMPLATE
+    assert params == {"acct_bal": 1_000_000, "city": "sf"}
     assert expanding == []
 
 
-def test_render_where_clause_partial_filters_omits_missing_slot():
-    template = generate_generic_where_template(["acct_bal", "city"])
-    resolved = [{"column_name": "account_balance", "operator": "gt", "value": 5, "param_name": "acct_bal"}]
-    where, params, _ = render_where_clause(template, resolved)
-    assert where == "account_balance > :acct_bal"
-    assert params == {"acct_bal": 5}
+def test_render_where_clause_falls_back_to_slot_default_when_user_omits_it():
+    # User only mentioned account balance -- city's placeholder still needs a
+    # value, so it falls back to its configured default ('ny').
+    resolved = [
+        {"column_name": "account_balance", "operator": "gt", "value": 1_000_000, "param_name": "acct_bal"}
+    ]
+    where, params, _ = render_where_clause(FIXED_TEMPLATE, resolved, SLOT_DEFINITIONS_WITH_DEFAULTS)
+    assert where == FIXED_TEMPLATE
+    assert params == {"acct_bal": 1_000_000, "city": "ny"}
 
 
-def test_render_where_clause_no_filters_is_empty():
-    template = generate_generic_where_template(["acct_bal", "city"])
-    where, params, _ = render_where_clause(template, [])
-    assert where == ""
-    assert params == {}
+def test_render_where_clause_all_defaults_when_user_gives_no_filters():
+    where, params, _ = render_where_clause(FIXED_TEMPLATE, [], SLOT_DEFINITIONS_WITH_DEFAULTS)
+    assert where == FIXED_TEMPLATE
+    assert params == {"acct_bal": 10000, "city": "ny"}
+
+
+def test_render_where_clause_user_value_overrides_default():
+    resolved = [{"column_name": "city", "operator": "eq", "value": "sf", "param_name": "city"}]
+    where, params, _ = render_where_clause(FIXED_TEMPLATE, resolved, SLOT_DEFINITIONS_WITH_DEFAULTS)
+    assert where == FIXED_TEMPLATE
+    assert params == {"acct_bal": 10000, "city": "sf"}
+
+
+def test_render_where_clause_raises_when_slot_has_no_value_or_default():
+    # SLOT_DEFINITIONS (no defaults) + no resolved filters means the
+    # template's placeholders can't all be filled -- that's a config error,
+    # not a silently-dropped clause.
+    with pytest.raises(SlotResolutionError):
+        render_where_clause(FIXED_TEMPLATE, [], SLOT_DEFINITIONS)
 
 
 def test_assemble_select_sql_includes_where_order_and_limit():
@@ -77,49 +116,53 @@ def test_assemble_select_sql_omits_where_when_empty():
     assert "WHERE" not in sql
 
 
-def test_resolve_filters_drops_column_not_in_slot_whitelist(monkeypatch):
-    # Simulate RAG returning a column that was never declared for this
-    # insight_type -- the whitelist cross-check must drop it, not trust RAG.
-    monkeypatch.setattr(
-        sql_builder,
-        "match_column",
-        lambda hint, target_type, n_results=3: ColumnMatch(
-            column_name="ssn", table="clients", data_type="string", confidence=0.99
-        ),
+class _FakeStructuredModel:
+    def __init__(self, result: "sql_builder._SlotValues"):
+        self._result = result
+
+    def invoke(self, messages):
+        return self._result
+
+
+class _FakeChatModel:
+    def __init__(self, result: "sql_builder._SlotValues"):
+        self._result = result
+
+    def with_structured_output(self, schema):
+        return _FakeStructuredModel(self._result)
+
+
+def _mock_llm(monkeypatch, values: list[tuple[str, str]]):
+    """Stub out the LLM call resolve_slot_values makes, and the RAG lookup
+    used only for prompt context (irrelevant to what's asserted here)."""
+    result = sql_builder._SlotValues(
+        values=[sql_builder._SlotValue(slot_name=name, value=value) for name, value in values]
     )
-    extracted = [{"column_hint": "social security number", "operator": "eq", "value": "123"}]
-    resolved = resolve_filters(extracted, "clients", SLOT_DEFINITIONS, confidence_threshold=0.6)
+    monkeypatch.setattr(sql_builder, "get_column_context", lambda table, column_name: None)
+    monkeypatch.setattr(sql_builder, "get_chat_model", lambda temperature=0.0: _FakeChatModel(result))
+
+
+def test_resolve_slot_values_normalizes_llm_output_into_resolved_filter(monkeypatch):
+    # The LLM is expected to normalize "1 million" itself -- resolve_slot_values
+    # just needs to trust and coerce the digits it comes back with.
+    _mock_llm(monkeypatch, [("acct_bal", "1000000")])
+    resolved = resolve_slot_values(
+        "clients with account balance greater than 1 million", "clients", SLOT_DEFINITIONS_WITH_DEFAULTS
+    )
+    assert resolved == [
+        {"column_name": "account_balance", "operator": "gte", "value": 1_000_000, "param_name": "acct_bal"}
+    ]
+
+
+def test_resolve_slot_values_drops_slot_name_outside_whitelist(monkeypatch):
+    # Simulate the LLM naming a slot that was never declared for this
+    # insight_type -- must be dropped, not trusted for SQL.
+    _mock_llm(monkeypatch, [("ssn", "123")])
+    resolved = resolve_slot_values("ssn is 123", "clients", SLOT_DEFINITIONS_WITH_DEFAULTS)
     assert resolved == []
 
 
-def test_resolve_filters_drops_disallowed_operator(monkeypatch):
-    monkeypatch.setattr(
-        sql_builder,
-        "match_column",
-        lambda hint, target_type, n_results=3: ColumnMatch(
-            column_name="city", table="clients", data_type="string", confidence=0.9
-        ),
-    )
-    # "gt" isn't in city's allowed_operators (["eq", "like"])
-    extracted = [{"column_hint": "city", "operator": "gt", "value": "xyz"}]
-    resolved = resolve_filters(extracted, "clients", SLOT_DEFINITIONS, confidence_threshold=0.6)
-    assert resolved == []
-
-
-def test_resolve_filters_below_confidence_threshold_dropped(monkeypatch):
-    monkeypatch.setattr(
-        sql_builder,
-        "match_column",
-        lambda hint, target_type, n_results=3: ColumnMatch(
-            column_name="account_balance", table="clients", data_type="numeric", confidence=0.1
-        ),
-    )
-    extracted = [{"column_hint": "balance", "operator": "gt", "value": "1000000"}]
-    resolved = resolve_filters(extracted, "clients", SLOT_DEFINITIONS, confidence_threshold=0.6)
-    assert resolved == []
-
-
-def test_resolve_filters_missing_required_slot_raises(monkeypatch):
+def test_resolve_slot_values_missing_required_slot_raises(monkeypatch):
     slots = {
         "slots": [
             {
@@ -131,21 +174,20 @@ def test_resolve_filters_missing_required_slot_raises(monkeypatch):
             }
         ]
     }
-    monkeypatch.setattr(sql_builder, "match_column", lambda hint, target_type, n_results=3: None)
+    _mock_llm(monkeypatch, [])
     with pytest.raises(SlotResolutionError):
-        resolve_filters([], "clients", slots, confidence_threshold=0.6)
+        resolve_slot_values("hello", "clients", slots)
 
 
-def test_resolve_filters_coerces_numeric_value(monkeypatch):
-    monkeypatch.setattr(
-        sql_builder,
-        "match_column",
-        lambda hint, target_type, n_results=3: ColumnMatch(
-            column_name="account_balance", table="clients", data_type="numeric", confidence=0.9
-        ),
-    )
-    extracted = [{"column_hint": "balance", "operator": "gt", "value": "1,000,000"}]
-    resolved = resolve_filters(extracted, "clients", SLOT_DEFINITIONS, confidence_threshold=0.6)
+def test_resolve_slot_values_raises_on_non_numeric_value(monkeypatch):
+    _mock_llm(monkeypatch, [("acct_bal", "a lot")])
+    with pytest.raises(SlotResolutionError):
+        resolve_slot_values("balance is a lot", "clients", SLOT_DEFINITIONS_WITH_DEFAULTS)
+
+
+def test_resolve_slot_values_coerces_currency_symbol_and_commas(monkeypatch):
+    _mock_llm(monkeypatch, [("acct_bal", "$1,000,000")])
+    resolved = resolve_slot_values("balance over $1,000,000", "clients", SLOT_DEFINITIONS_WITH_DEFAULTS)
     assert resolved == [
-        {"column_name": "account_balance", "operator": "gt", "value": 1_000_000, "param_name": "acct_bal"}
+        {"column_name": "account_balance", "operator": "gte", "value": 1_000_000, "param_name": "acct_bal"}
     ]

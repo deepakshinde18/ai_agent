@@ -1,3 +1,4 @@
+import hashlib
 from functools import lru_cache
 
 import chromadb
@@ -7,6 +8,14 @@ from app.config import get_settings
 
 INTENT_COLLECTION_NAME = "intent_examples"
 COLUMN_COLLECTION_NAME = "column_metadata"
+
+
+def stable_id(*parts: str) -> str:
+    """Deterministic document id so seeding upserts rather than duplicates,
+    and so callers can fetch a known (table, column_name) doc directly
+    instead of a similarity search.
+    """
+    return hashlib.sha256("::".join(parts).encode("utf-8")).hexdigest()[:24]
 
 
 @lru_cache

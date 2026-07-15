@@ -37,7 +37,6 @@ class Settings(BaseSettings):
     # -- Chroma --
     chroma_persist_dir: str = Field(default="./.chroma_data")
     intent_confidence_threshold: float = Field(default=0.75)
-    column_match_confidence_threshold: float = Field(default=0.6)
 
     # -- JWT auth --
     jwt_secret_key: str

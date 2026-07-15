@@ -180,13 +180,14 @@ button.secondary:hover {
 /* --- Narrative --- */
 
 .narrative {
-  padding: 16px 18px;
-  border-radius: 10px;
+  padding: 20px 22px;
+  border-radius: 12px;
   border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
   background: var(--bg-subtle);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
 }
 
 .narrative h3,
@@ -195,6 +196,49 @@ button.secondary:hover {
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--text);
+}
+
+.narrative-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--text-h);
+}
+
+.narrative-body p {
+  margin: 0;
+}
+
+.narrative-body strong {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.narrative-body ul {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.narrative-body li {
+  position: relative;
+  padding-left: 20px;
+}
+
+.narrative-body li::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 10px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
 }
 
 .cursor {

@@ -1,11 +1,18 @@
 """Pure query-building logic for the fill_slots graph node.
 
 Security model (SQL-injection-safe by construction):
-  - STRUCTURE (table names, column names, join clauses, order/limit) always
-    comes from developer-authored config (Postgres `insight_definitions` row
-    + config/insights/*.yaml) or from a column name that has been resolved
-    via RAG *and* cross-checked against that config's slot whitelist. Never
-    from raw user text or unvalidated LLM output.
+  - STRUCTURE is 100% developer-authored and never changes at request time:
+    table/column names, joins, order/limit (config/insights/*.yaml), and the
+    where_clause_template itself -- including which columns it references and
+    how they're combined (AND/OR/parens) -- comes verbatim from the
+    `insight_definitions` row. The user's request can never add, remove, or
+    reorder a condition, only supply the bound-parameter value that slots
+    into a placeholder (`:slot_name`) already present in that fixed template.
+  - Column *names* the LLM is even allowed to talk about come only from the
+    insight's own slot_definitions whitelist -- never invented, never taken
+    from raw user text. RAG-sourced column_metadata is used only as prompt
+    *context* (descriptions/synonyms) so the LLM recognizes a column from
+    however the user phrased it.
   - VALUES (the actual numbers/strings the user typed) are never string-
     interpolated into SQL text -- they always travel as bound parameters.
 """
@@ -14,14 +21,13 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from jinja2 import Environment
 from pydantic import BaseModel, Field
 from sqlalchemy import bindparam, text
 from sqlalchemy.sql.elements import TextClause
 
-from app.graph.state import FilterCondition, Operator, ResolvedFilter
+from app.graph.state import Operator, ResolvedFilter
 from app.llm import get_chat_model
-from app.rag.column_matcher import match_column
+from app.rag.column_matcher import get_column_context
 
 CONFIG_INSIGHTS_DIR = Path(__file__).resolve().parents[2] / "config" / "insights"
 
@@ -36,9 +42,6 @@ SQL_OPERATORS: dict[Operator, str] = {
     "in": "IN",
 }
 
-_ALLOWED_OPERATORS = tuple(SQL_OPERATORS.keys())
-_jinja_env = Environment(autoescape=False)
-
 
 class SlotResolutionError(Exception):
     def __init__(self, message: str):
@@ -47,52 +50,18 @@ class SlotResolutionError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# Step (a): LLM extracts {column_hint, operator, value} filters from raw text
-# ---------------------------------------------------------------------------
-
-
-class _ExtractedFilter(BaseModel):
-    column_hint: str = Field(description="The phrase the user used to refer to a column, e.g. 'account balance'")
-    operator: str = Field(description=f"One of: {', '.join(_ALLOWED_OPERATORS)}")
-    value: str = Field(description="The literal value as text, e.g. '1000000' or 'xyz'")
-
-
-class _ExtractedFilters(BaseModel):
-    filters: list[_ExtractedFilter] = Field(default_factory=list)
-
-
-def extract_filters(raw_input: str) -> list[FilterCondition]:
-    model = get_chat_model(temperature=0.0).with_structured_output(_ExtractedFilters)
-    result: _ExtractedFilters = model.invoke(
-        [
-            {
-                "role": "system",
-                "content": (
-                    "Extract filter conditions from the user's data-query request. "
-                    f"operator must be exactly one of: {', '.join(_ALLOWED_OPERATORS)}. "
-                    "If the user gives no filters, return an empty list."
-                ),
-            },
-            {"role": "user", "content": raw_input},
-        ]
-    )
-    filters: list[FilterCondition] = []
-    for f in result.filters:
-        op = f.operator.lower().strip()
-        if op not in _ALLOWED_OPERATORS:
-            continue
-        filters.append({"column_hint": f.column_hint, "operator": op, "value": f.value})  # type: ignore[typeddict-item]
-    return filters
-
-
-# ---------------------------------------------------------------------------
-# Steps (b)+(c): RAG-resolve column_hint -> real column, whitelist cross-check
+# Steps (a)+(b)+(c): one LLM call resolves a bound-parameter value for each
+# of this insight's fixed slots -- grounded with each slot's real column name
+# and RAG column-metadata description, so the LLM (not a brittle regex) does
+# the natural-language normalization (e.g. "1 million" -> 1000000, "10k" ->
+# 10000). Slots the user didn't address are left for render_where_clause to
+# fall back to their configured default.
 # ---------------------------------------------------------------------------
 
 
 def _coerce_value(raw_value: str, expected_type: str) -> Any:
     if expected_type == "numeric":
-        cleaned = raw_value.replace(",", "").strip()
+        cleaned = raw_value.replace(",", "").replace("$", "").strip()
         try:
             return float(cleaned) if "." in cleaned else int(cleaned)
         except ValueError as exc:
@@ -100,91 +69,117 @@ def _coerce_value(raw_value: str, expected_type: str) -> Any:
     return raw_value
 
 
-def resolve_filters(
-    extracted: list[FilterCondition],
-    target_type: str,
-    slot_definitions: dict,
-    confidence_threshold: float,
-) -> list[ResolvedFilter]:
+class _SlotValue(BaseModel):
+    slot_name: str = Field(description="The exact slot_name from the list provided -- never invent one")
+    value: str = Field(
+        description=(
+            "The value for this slot, normalized to plain text: for numeric "
+            "slots, digits only -- no words, commas, or currency symbols "
+            "(e.g. 'one million' or '1 million' becomes '1000000', '10k' "
+            "becomes '10000')."
+        )
+    )
+
+
+class _SlotValues(BaseModel):
+    values: list[_SlotValue] = Field(default_factory=list)
+
+
+def resolve_slot_values(raw_input: str, target_type: str, slot_definitions: dict) -> list[ResolvedFilter]:
     slots = slot_definitions.get("slots", [])
-    # Whitelist: only columns explicitly declared for this insight_type may
-    # ever be interpolated into SQL, regardless of what RAG returns.
-    slot_by_column = {slot["column_name"]: slot for slot in slots}
+    if not slots:
+        return []
 
+    slot_lines = []
+    for slot in slots:
+        context = get_column_context(target_type, slot["column_name"]) or slot["column_name"]
+        slot_lines.append(f"- slot_name={slot['slot_name']!r}: {context} (type={slot.get('expected_type', 'string')})")
+
+    model = get_chat_model(temperature=0.0).with_structured_output(_SlotValues)
+    result: _SlotValues = model.invoke(
+        [
+            {
+                "role": "system",
+                "content": (
+                    "The user is querying a fixed report that has the filter slots "
+                    "listed below. Decide which slots, if any, the user's request "
+                    "supplies a value for -- include ONLY slots they actually "
+                    "addressed, using the exact slot_name given. Normalize each "
+                    "value yourself (e.g. word-form or shorthand numbers to plain "
+                    "digits).\n\nSlots:\n" + "\n".join(slot_lines)
+                ),
+            },
+            {"role": "user", "content": raw_input},
+        ]
+    )
+
+    slot_by_name = {slot["slot_name"]: slot for slot in slots}
     resolved: list[ResolvedFilter] = []
-    matched_slot_names: set[str] = set()
-
-    for filt in extracted:
-        match = match_column(filt["column_hint"], target_type)
-        if match is None or match.confidence < confidence_threshold:
-            continue
-        slot = slot_by_column.get(match.column_name)
+    for item in result.values:
+        slot = slot_by_name.get(item.slot_name)
         if slot is None:
-            # RAG matched a column that isn't whitelisted for this insight --
-            # drop it rather than trust a probabilistic match for SQL structure.
+            # LLM named a slot outside the whitelist -- drop it rather than
+            # trust unvalidated output for anything SQL-shaped.
             continue
-        if filt["operator"] not in slot["allowed_operators"]:
-            continue
-
-        value = _coerce_value(str(filt["value"]), slot.get("expected_type", "string"))
+        value = _coerce_value(item.value, slot.get("expected_type", "string"))
+        default_operator = (slot.get("default") or {}).get("operator", "eq")
         resolved.append(
             {
                 "column_name": slot["column_name"],
-                "operator": filt["operator"],  # type: ignore[typeddict-item]
+                "operator": default_operator,
                 "value": value,
                 "param_name": slot["slot_name"],
             }
         )
-        matched_slot_names.add(slot["slot_name"])
 
     missing_required = [
         slot["slot_name"]
         for slot in slots
-        if slot.get("required") and slot["slot_name"] not in matched_slot_names
+        if slot.get("required") and slot["slot_name"] not in {rf["param_name"] for rf in resolved}
     ]
     if missing_required:
-        raise SlotResolutionError(
-            f"Could not resolve required filter(s): {', '.join(missing_required)}"
-        )
+        raise SlotResolutionError(f"Could not resolve required filter(s): {', '.join(missing_required)}")
 
     return resolved
 
 
 # ---------------------------------------------------------------------------
-# Step (d)+(e): render the where_clause_template, collect bound params
+# Step (d)+(e): fill in the fixed, developer-authored where_clause_template's
+# bound-parameter values. The template's SQL text (columns, operators,
+# AND/OR, parens) is never touched -- only sql_params changes per request.
 # ---------------------------------------------------------------------------
 
 
 def render_where_clause(
-    where_clause_template: str, resolved_filters: list[ResolvedFilter]
+    where_clause_template: str,
+    resolved_filters: list[ResolvedFilter],
+    slot_definitions: dict,
 ) -> tuple[str, dict[str, Any], list[str]]:
-    context: dict[str, Any] = {}
+    resolved_by_slot = {rf["param_name"]: rf for rf in resolved_filters}
     sql_params: dict[str, Any] = {}
     expanding_params: list[str] = []
 
-    for rf in resolved_filters:
-        sql_op = SQL_OPERATORS[rf["operator"]]
-        clause = f"{rf['column_name']} {sql_op} :{rf['param_name']}"
-        context[f"{rf['param_name']}_clause"] = clause
-        sql_params[rf["param_name"]] = rf["value"]
-        if rf["operator"] == "in":
-            expanding_params.append(rf["param_name"])
+    for slot in slot_definitions.get("slots", []):
+        name = slot["slot_name"]
+        rf = resolved_by_slot.get(name)
+        if rf is not None:
+            value, operator = rf["value"], rf["operator"]
+        else:
+            default = slot.get("default")
+            if default is None:
+                # The template's placeholder (:name) is unconditional, so every
+                # slot it references must resolve to something -- either from
+                # the user's request or a configured default.
+                raise SlotResolutionError(
+                    f"No value given and no default configured for slot '{name}'"
+                )
+            value, operator = default["value"], default["operator"]
 
-    rendered = _jinja_env.from_string(where_clause_template).render(**context).strip()
-    return rendered, sql_params, expanding_params
+        sql_params[name] = value
+        if operator == "in":
+            expanding_params.append(name)
 
-
-def generate_generic_where_template(slot_names: list[str]) -> str:
-    """Build a where_clause_template that ANDs together whichever slot
-    clauses ended up resolved, in slot-definition order, skipping any that
-    weren't present in the user's request. Used when seeding
-    insight_definitions rows -- one generic shape works for any slot set.
-    """
-    lines = ["{%- set parts = [] -%}"]
-    for name in slot_names:
-        lines.append(f"{{%- if {name}_clause %}}{{% set _ = parts.append({name}_clause) %}}{{% endif -%}}")
-    lines.append("{{ parts | join(' AND ') }}")
-    return "\n".join(lines)
+    return where_clause_template, sql_params, expanding_params
 
 
 # ---------------------------------------------------------------------------
