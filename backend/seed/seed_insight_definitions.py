@@ -47,6 +47,49 @@ INSIGHT_DEFINITIONS = [
             ]
         },
     },
+    {
+        "insight_type": "accounts_by_brokerage_sweep_cash",
+        "target_type": "accounts",
+        "from_table_name": "accounts",
+        "config_yaml_path": "accounts_by_brokerage_sweep_cash.yaml",
+        # curr_asset threshold is a plain numeric slot; brkg_sweep_cash is
+        # compared against a *percentage* of curr_asset -- the multiplication
+        # is fixed template SQL, only the percentage's bound value (0-1
+        # fraction) changes per request. brkg_sweep_cash_rank binds an
+        # expanding IN list.
+        "where_clause_template": (
+            "curr_asset >= :curr_asset AND brkg_sweep_cash >= (curr_asset * :brkg_sweep_pct) "
+            "AND brkg_sweep_cash_rank IN :brkg_sweep_cash_rank"
+        ),
+        "slot_definitions": {
+            "slots": [
+                {
+                    "slot_name": "curr_asset",
+                    "column_name": "curr_asset",
+                    "expected_type": "numeric",
+                    "allowed_operators": ["gt", "gte", "lt", "lte", "eq"],
+                    "required": False,
+                    "default": {"operator": "gte", "value": 10000},
+                },
+                {
+                    "slot_name": "brkg_sweep_pct",
+                    "column_name": "brkg_sweep_cash",
+                    "expected_type": "percentage",
+                    "allowed_operators": ["gte"],
+                    "required": False,
+                    "default": {"operator": "gte", "value": 0.02},
+                },
+                {
+                    "slot_name": "brkg_sweep_cash_rank",
+                    "column_name": "brkg_sweep_cash_rank",
+                    "expected_type": "numeric_list",
+                    "allowed_operators": ["in"],
+                    "required": False,
+                    "default": {"operator": "in", "value": [1, 2, 3, 4]},
+                },
+            ]
+        },
+    },
 ]
 
 

@@ -66,6 +66,29 @@ def _coerce_value(raw_value: str, expected_type: str) -> Any:
             return float(cleaned) if "." in cleaned else int(cleaned)
         except ValueError as exc:
             raise SlotResolutionError(f"Expected a numeric value, got '{raw_value}'") from exc
+    if expected_type == "percentage":
+        # LLM normalizes to a plain percentage number (see the resolve_slot_values
+        # prompt) -- e.g. "10%" / "ten percent" -> "10". Stored as a 0-1 fraction
+        # so it can be multiplied directly against another column in a
+        # developer-authored template, e.g. "col >= (other_col * :pct_slot)".
+        cleaned = raw_value.replace("%", "").replace(",", "").strip()
+        try:
+            return float(cleaned) / 100
+        except ValueError as exc:
+            raise SlotResolutionError(f"Expected a percentage value, got '{raw_value}'") from exc
+    if expected_type == "numeric_list":
+        # For slots whose configured operator is "in" (e.g. "rank IN
+        # :rank"), the LLM normalizes to a comma-separated list of digits
+        # (see the resolve_slot_values prompt) -- e.g. "1,2,3,4" or "ranks 1,
+        # 2, 3 and 4" -> "1,2,3,4". Returned as an actual list so it can bind
+        # to an expanding IN parameter.
+        parts = [p.strip() for p in raw_value.split(",") if p.strip()]
+        if not parts:
+            raise SlotResolutionError(f"Expected a comma-separated list of numbers, got '{raw_value}'")
+        try:
+            return [float(p) if "." in p else int(p) for p in parts]
+        except ValueError as exc:
+            raise SlotResolutionError(f"Expected a comma-separated list of numbers, got '{raw_value}'") from exc
     return raw_value
 
 
@@ -76,7 +99,11 @@ class _SlotValue(BaseModel):
             "The value for this slot, normalized to plain text: for numeric "
             "slots, digits only -- no words, commas, or currency symbols "
             "(e.g. 'one million' or '1 million' becomes '1000000', '10k' "
-            "becomes '10000')."
+            "becomes '10000'); for percentage slots, the plain percentage "
+            "number with no '%' sign or words (e.g. '10%' or 'ten percent' "
+            "becomes '10'); for numeric_list slots, a comma-separated list "
+            "of digits with no spaces or words (e.g. 'ranks 1, 2, 3 and 4' "
+            "becomes '1,2,3,4')."
         )
     )
 
@@ -105,8 +132,14 @@ def resolve_slot_values(raw_input: str, target_type: str, slot_definitions: dict
                     "listed below. Decide which slots, if any, the user's request "
                     "supplies a value for -- include ONLY slots they actually "
                     "addressed, using the exact slot_name given. Normalize each "
-                    "value yourself (e.g. word-form or shorthand numbers to plain "
-                    "digits).\n\nSlots:\n" + "\n".join(slot_lines)
+                    "value yourself: numeric slots as plain digits (e.g. word-form "
+                    "or shorthand numbers like '1 million' or '10k' become "
+                    "'1000000' or '10000'); percentage slots as the plain "
+                    "percentage number with no '%' sign or words (e.g. '10%' or "
+                    "'more than 10 percent' becomes '10'); numeric_list slots as "
+                    "a comma-separated list of digits with no spaces or words "
+                    "(e.g. 'rank in 1, 2, 3 and 4' becomes "
+                    "'1,2,3,4').\n\nSlots:\n" + "\n".join(slot_lines)
                 ),
             },
             {"role": "user", "content": raw_input},
