@@ -58,3 +58,12 @@ async def run_fill_slots(raw_input: str, session_id: str | None = None) -> dict:
         "rows": state.get("fetched_rows"),
         "row_count": state.get("row_count"),
     }
+
+
+if __name__ == "__main__":
+    import asyncio
+    import json
+    import sys
+
+    query = " ".join(sys.argv[1:]) or "clients with balance over 1 million in Springfield"
+    print(json.dumps(asyncio.run(run_fill_slots(query)), indent=2, default=str))
