@@ -54,3 +54,10 @@ async def sanitize_node(state: InsightAgentState) -> dict:
             "internal_detail": repr(exc),
         }
         return {"error": error}
+
+
+if __name__ == "__main__":
+    import asyncio
+
+    sample_state = {"raw_input": "Show me clients with balance over 1 million in Springfield"}
+    print(asyncio.run(sanitize_node(sample_state)))

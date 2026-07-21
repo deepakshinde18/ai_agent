@@ -60,3 +60,21 @@ async def fill_slots_node(state: InsightAgentState) -> dict:
             "internal_detail": repr(exc),
         }
         return {"error": error}
+
+
+if __name__ == "__main__":
+    import asyncio
+
+    from seed.seed_insight_definitions import INSIGHT_DEFINITIONS
+
+    definition = next(d for d in INSIGHT_DEFINITIONS if d["insight_type"] == "clients_by_balance_city")
+    sample_state = {
+        "session_id": "test-session",
+        "raw_input": "clients with balance over 1 million in Springfield",
+        "target_type": definition["target_type"],
+        "from_table_name": definition["from_table_name"],
+        "where_clause_template": definition["where_clause_template"],
+        "slot_definitions": definition["slot_definitions"],
+        "config_yaml_path": definition["config_yaml_path"],
+    }
+    print(asyncio.run(fill_slots_node(sample_state)))

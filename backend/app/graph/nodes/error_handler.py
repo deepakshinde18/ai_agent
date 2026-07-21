@@ -16,3 +16,18 @@ async def error_handler_node(state: InsightAgentState) -> dict:
         )
     # error.user_message is already safe for the client; nothing to transform.
     return {}
+
+
+if __name__ == "__main__":
+    import asyncio
+
+    sample_state = {
+        "session_id": "test-session",
+        "error": {
+            "node": "fill_slots",
+            "code": "SLOT_RESOLUTION_FAILED",
+            "user_message": "Couldn't fully understand the filters in your request.",
+            "internal_detail": "SlotResolutionError('...')",
+        },
+    }
+    print(asyncio.run(error_handler_node(sample_state)))

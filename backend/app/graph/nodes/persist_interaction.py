@@ -37,3 +37,21 @@ async def persist_interaction_node(state: InsightAgentState) -> dict:
         logger.error("persist_interaction_failed", detail=repr(exc), session_id=state.get("session_id"))
 
     return {}
+
+
+if __name__ == "__main__":
+    import asyncio
+    import uuid
+
+    sample_state = {
+        "user_id": str(uuid.uuid4()),
+        "session_id": str(uuid.uuid4()),
+        "raw_input": "clients with balance over 1 million in Springfield",
+        "resolved_intent": "clients_by_balance_city",
+        "intent_confidence": 0.92,
+        "final_sql": "SELECT client_id FROM clients WHERE account_balance >= :acct_bal",
+        "row_count": 1,
+        "narrative_complete": "Found 1 client above the threshold.",
+        "started_at_ms": time.time() * 1000,
+    }
+    print(asyncio.run(persist_interaction_node(sample_state)))

@@ -36,3 +36,10 @@ async def lookup_intent_node(state: InsightAgentState) -> dict:
             "internal_detail": repr(exc),
         }
         return {"error": error}
+
+
+if __name__ == "__main__":
+    import asyncio
+
+    sample_state = {"resolved_intent": "clients_by_balance_city"}
+    print(asyncio.run(lookup_intent_node(sample_state)))

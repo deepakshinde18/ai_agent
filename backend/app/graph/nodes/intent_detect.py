@@ -52,3 +52,12 @@ async def detect_intent_node(
             "intent_confidence": result.top.confidence,
         },
     )
+
+
+if __name__ == "__main__":
+    import asyncio
+
+    sample_state = {"sanitized_input": "Show me clients with balance over 1 million in Springfield"}
+    result = asyncio.run(detect_intent_node(sample_state))
+    print(f"goto={result.goto!r}")
+    print(f"update={result.update}")

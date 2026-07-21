@@ -28,3 +28,16 @@ async def generate_narrative_node(state: InsightAgentState) -> dict:
             "internal_detail": repr(exc),
         }
         return {"error": error}
+
+
+if __name__ == "__main__":
+    import asyncio
+
+    sample_state = {
+        "raw_input": "clients with balance over 1 million in Springfield",
+        "target_type": "clients",
+        "resolved_intent": "clients_by_balance_city",
+        "config_yaml_path": "clients_by_balance_city.yaml",
+        "fetched_rows": [{"id": 1, "name": "Ava Thompson", "balance": 1_250_000, "city": "Springfield"}],
+    }
+    print(asyncio.run(generate_narrative_node(sample_state)))
