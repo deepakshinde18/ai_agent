@@ -12,19 +12,6 @@ from app.logging_conf import get_logger
 
 logger = get_logger(__name__)
 
-# Target Postgres isn't provisioned yet -- stand in with one dummy row shaped
-# like the `clients` example table so downstream nodes (narrative, SSE) have
-# something to work with. Swap back to the commented-out execution below once
-# the target DB is available.
-_DUMMY_ROWS = [
-    {
-        "client_id": 1,
-        "client_name": "Ava Thompson",
-        "account_balance": 1_250_000,
-        "city": "Springfield",
-    }
-]
-
 
 async def fill_slots_node(state: InsightAgentState) -> dict:
     try:
@@ -44,11 +31,10 @@ async def fill_slots_node(state: InsightAgentState) -> dict:
             sql_params=sql_params,
         )
 
-        # stmt = build_bound_statement(sql, sql_params, expanding_params)
-        # async with target_engine.connect() as conn:
-        #     result = await conn.execute(stmt, sql_params)
-        #     rows = [dict(row._mapping) for row in result]
-        rows = _DUMMY_ROWS
+        stmt = build_bound_statement(sql, sql_params, expanding_params)
+        async with target_engine.connect() as conn:
+            result = await conn.execute(stmt, sql_params)
+            rows = [dict(row._mapping) for row in result]
 
         return {
             "resolved_filters": resolved,

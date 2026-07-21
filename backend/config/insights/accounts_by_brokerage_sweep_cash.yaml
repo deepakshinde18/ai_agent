@@ -1,0 +1,31 @@
+# Developer-authored, trusted config: select columns, joins, ordering, and
+# limit for the "accounts_by_brokerage_sweep_cash" insight. Never touched by
+# user input or LLM output -- only the WHERE clause (built in sql_builder.py)
+# is influenced by the user's request.
+
+insight_type: accounts_by_brokerage_sweep_cash
+target_type: accounts
+
+select_columns:
+  - column: account_id
+    alias: id
+  - column: client_id
+    alias: client_id
+  - column: curr_asset
+    alias: curr_asset
+  - column: brkg_sweep_cash
+    alias: brkg_sweep_cash
+  - column: brkg_sweep_cash_rank
+    alias: brkg_sweep_cash_rank
+
+joins: []
+
+order_by:
+  - column: brkg_sweep_cash_rank
+    direction: ASC
+
+limit: 200
+
+narrative_hints:
+  tone: "concise, business-analyst style"
+  emphasize: ["brokerage sweep cash concentration", "rank distribution"]

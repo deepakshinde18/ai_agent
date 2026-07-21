@@ -50,6 +50,57 @@ SLOT_DEFINITIONS_WITH_DEFAULTS = {
 
 FIXED_TEMPLATE = "account_balance >= :acct_bal AND city = :city"
 
+# brkg_sweep_cash is compared against a percentage of curr_asset -- the
+# multiplication itself is fixed template SQL; only the percentage's bound
+# value changes per request.
+SWEEP_TEMPLATE = (
+    "curr_asset >= :curr_asset AND brkg_sweep_cash >= (curr_asset * :brkg_sweep_pct)"
+)
+
+SLOT_DEFINITIONS_SWEEP_PCT = {
+    "slots": [
+        {
+            "slot_name": "curr_asset",
+            "column_name": "curr_asset",
+            "expected_type": "numeric",
+            "allowed_operators": ["gte"],
+            "required": False,
+            "default": {"operator": "gte", "value": 10000},
+        },
+        {
+            "slot_name": "brkg_sweep_pct",
+            "column_name": "brkg_sweep_cash",
+            "expected_type": "percentage",
+            "allowed_operators": ["gte"],
+            "required": False,
+            "default": {"operator": "gte", "value": 0.02},
+        },
+    ]
+}
+
+# Full original scenario: curr_asset >= 10000 AND brkg_sweep_cash >=
+# (curr_asset * 0.02) AND brkg_sweep_cash_rank IN (1,2,3,4).
+SWEEP_TEMPLATE_WITH_RANK = (
+    "curr_asset >= :curr_asset AND brkg_sweep_cash >= (curr_asset * :brkg_sweep_pct) "
+    "AND brkg_sweep_cash_rank IN :brkg_sweep_cash_rank"
+)
+
+SLOT_DEFINITIONS_SWEEP_PCT_AND_RANK = {
+    "slots": [
+        *SLOT_DEFINITIONS_SWEEP_PCT["slots"],
+        {
+            "slot_name": "brkg_sweep_cash_rank",
+            "column_name": "brkg_sweep_cash_rank",
+            "expected_type": "numeric_list",
+            "allowed_operators": ["in"],
+            "required": False,
+            # operator is fixed config ("in") -- never chosen by the user,
+            # only the list of values it binds against can change.
+            "default": {"operator": "in", "value": [1, 2, 3, 4]},
+        },
+    ]
+}
+
 
 def test_render_where_clause_returns_template_unchanged():
     # Structure (columns, operators, AND/OR) is authored config -- render
@@ -191,3 +242,90 @@ def test_resolve_slot_values_coerces_currency_symbol_and_commas(monkeypatch):
     assert resolved == [
         {"column_name": "account_balance", "operator": "gte", "value": 1_000_000, "param_name": "acct_bal"}
     ]
+
+
+def test_resolve_slot_values_coerces_percentage_to_fraction(monkeypatch):
+    # User says "10%" -- LLM normalizes to the plain number "10", and
+    # _coerce_value turns that into the 0.10 fraction the template's
+    # "curr_asset * :brkg_sweep_pct" multiplication expects.
+    _mock_llm(monkeypatch, [("brkg_sweep_pct", "10")])
+    resolved = resolve_slot_values(
+        "brokerage sweep cash more than 10% of curr asset", "accounts", SLOT_DEFINITIONS_SWEEP_PCT
+    )
+    assert resolved == [
+        {"column_name": "brkg_sweep_cash", "operator": "gte", "value": 0.10, "param_name": "brkg_sweep_pct"}
+    ]
+
+
+def test_resolve_slot_values_raises_on_non_numeric_percentage(monkeypatch):
+    _mock_llm(monkeypatch, [("brkg_sweep_pct", "a lot")])
+    with pytest.raises(SlotResolutionError):
+        resolve_slot_values("sweep cash is a lot of curr asset", "accounts", SLOT_DEFINITIONS_SWEEP_PCT)
+
+
+def test_render_where_clause_keeps_percentage_formula_template_unchanged():
+    # Structure -- including the "(curr_asset * :brkg_sweep_pct)" formula --
+    # is fixed config; only the bound percentage value changes per request.
+    resolved = [
+        {"column_name": "brkg_sweep_cash", "operator": "gte", "value": 0.10, "param_name": "brkg_sweep_pct"}
+    ]
+    where, params, expanding = render_where_clause(SWEEP_TEMPLATE, resolved, SLOT_DEFINITIONS_SWEEP_PCT)
+    assert where == SWEEP_TEMPLATE
+    assert params == {"curr_asset": 10000, "brkg_sweep_pct": 0.10}
+    assert expanding == []
+
+
+def test_render_where_clause_falls_back_to_default_percentage():
+    where, params, _ = render_where_clause(SWEEP_TEMPLATE, [], SLOT_DEFINITIONS_SWEEP_PCT)
+    assert where == SWEEP_TEMPLATE
+    assert params == {"curr_asset": 10000, "brkg_sweep_pct": 0.02}
+
+
+def test_resolve_slot_values_coerces_comma_list_into_int_list(monkeypatch):
+    # "rank in 1,2,3,4" -- LLM normalizes to the digit-only comma string
+    # "1,2,3,4", and _coerce_value turns that into an actual [1, 2, 3, 4]
+    # list ready to bind to an expanding IN parameter.
+    _mock_llm(monkeypatch, [("brkg_sweep_cash_rank", "1,2,3,4")])
+    resolved = resolve_slot_values(
+        "brokerage cash sweep rank in 1,2,3,4", "accounts", SLOT_DEFINITIONS_SWEEP_PCT_AND_RANK
+    )
+    assert resolved == [
+        {
+            "column_name": "brkg_sweep_cash_rank",
+            "operator": "in",
+            "value": [1, 2, 3, 4],
+            "param_name": "brkg_sweep_cash_rank",
+        }
+    ]
+
+
+def test_resolve_slot_values_raises_on_empty_list(monkeypatch):
+    _mock_llm(monkeypatch, [("brkg_sweep_cash_rank", "")])
+    with pytest.raises(SlotResolutionError):
+        resolve_slot_values("rank is nothing", "accounts", SLOT_DEFINITIONS_SWEEP_PCT_AND_RANK)
+
+
+def test_render_where_clause_marks_numeric_list_slot_as_expanding_param():
+    resolved = [
+        {
+            "column_name": "brkg_sweep_cash_rank",
+            "operator": "in",
+            "value": [1, 2, 3, 4],
+            "param_name": "brkg_sweep_cash_rank",
+        }
+    ]
+    where, params, expanding = render_where_clause(
+        SWEEP_TEMPLATE_WITH_RANK, resolved, SLOT_DEFINITIONS_SWEEP_PCT_AND_RANK
+    )
+    assert where == SWEEP_TEMPLATE_WITH_RANK
+    assert params == {"curr_asset": 10000, "brkg_sweep_pct": 0.02, "brkg_sweep_cash_rank": [1, 2, 3, 4]}
+    assert expanding == ["brkg_sweep_cash_rank"]
+
+
+def test_render_where_clause_falls_back_to_default_rank_list():
+    where, params, expanding = render_where_clause(
+        SWEEP_TEMPLATE_WITH_RANK, [], SLOT_DEFINITIONS_SWEEP_PCT_AND_RANK
+    )
+    assert where == SWEEP_TEMPLATE_WITH_RANK
+    assert params == {"curr_asset": 10000, "brkg_sweep_pct": 0.02, "brkg_sweep_cash_rank": [1, 2, 3, 4]}
+    assert expanding == ["brkg_sweep_cash_rank"]
